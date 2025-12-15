@@ -445,7 +445,9 @@ class NPUModelRunner(GPUModelRunner):
         # moe_comm_method of each rank is MC2 and recomputation would never happen in D
         # nodes. So here we check whether recompute_scheduler_enable is True.
         return self.is_kv_consumer and not self.in_profile_run and self.ascend_config.recompute_scheduler_enable and self._select_moe_comm_method(
-            potential_max_num_tokens) == MoECommType.MC2
+            potential_max_num_tokens) in {
+                MoECommType.MC2, MoECommType.FUSED_MC2
+            }
 
     def _sync_metadata_across_dp(
             self, num_tokens: int,
@@ -1418,10 +1420,16 @@ class NPUModelRunner(GPUModelRunner):
                     moe_comm_type = MoECommType.ALLGATHER
 
         elif soc_version in {AscendDeviceType._910_93}:
-            moe_comm_type = (
-                MoECommType.MC2 if num_tokens <= mc2_tokens_capacity else
-                MoECommType.FUSED_ALLTOALL if quant_type == "w8a8_dynamic"
-                and get_ep_group().world_size <= 16 else MoECommType.ALLTOALL)
+            if num_tokens <= mc2_tokens_capacity:
+                if envs_ascend.VLLM_ASCEND_ENABLE_FUSED_MC2 and quant_type == "w8a8_dynamic":
+                    moe_comm_type = MoECommType.FUSED_MC2
+                else:
+                    moe_comm_type = MoECommType.MC2
+            elif quant_type == "w8a8_dynamic" and get_ep_group(
+            ).world_size <= 16:
+                moe_comm_type = MoECommType.FUSED_ALLTOALL
+            else:
+                moe_comm_type = MoECommType.ALLTOALL
         else:
             raise ValueError(f"Unsupported soc_version: {soc_version}")
 
@@ -2291,7 +2299,7 @@ class NPUModelRunner(GPUModelRunner):
             # allowing vLLM to correctly estimate the maximum memory required.
             mc2_tokens_capacity = get_mc2_tokens_capacity()
             if self.max_num_tokens > mc2_tokens_capacity and \
-                self._select_moe_comm_method(mc2_tokens_capacity) == MoECommType.MC2:
+                self._select_moe_comm_method(mc2_tokens_capacity) in {MoECommType.MC2, MoECommType.FUSED_MC2}:
                 self._dummy_run(mc2_tokens_capacity, with_prefill=True)
 
         output = None

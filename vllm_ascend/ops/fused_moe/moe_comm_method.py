@@ -46,6 +46,7 @@ def setup_moe_comm_method(moe_config):
     _MoECommMethods[MoECommType.MC2] = MC2CommImpl(moe_config)
     _MoECommMethods[MoECommType.FUSED_ALLTOALL] = FusedAlltoAllCommImpl(
         moe_config)
+    _MoECommMethods[MoECommType.FUSED_MC2] = FusedMC2CommImpl(moe_config)
 
 
 class MoECommMethod(ABC):
@@ -315,3 +316,71 @@ class FusedAlltoAllCommImpl(MoECommMethod):
             out=out,
         )
         return out
+
+
+class FusedMC2CommImpl(MoECommMethod):
+    """This implementation is for the scenarios listed below:
+    1. `class MC2CommImpl` can be used.
+    2. `VLLM_ASCEND_ENABLE_FUSED_MC2` is enabled.
+    3. `w8a8_dynamic` quantization is used.
+    This implementation uses the `dispatch_gmm_combine_decode` operator, which is a fused
+    operator for MoE decoding that combines communication and computation for optimization
+    on Ascend devices.
+    """
+
+    def _get_token_dispatcher(self):
+        return TokenDispatcherWithMC2()
+
+    def _get_prepare_finalize(self):
+        return PrepareAndFinalizeWithMC2(self.moe_config)
+
+    def fused_experts(
+            self,
+            hidden_states: torch.Tensor,
+            w1: torch.Tensor | list[torch.Tensor],
+            w2: torch.Tensor | list[torch.Tensor],
+            topk_weights: torch.Tensor,
+            topk_ids: torch.Tensor,
+            activation: str = "silu",
+            apply_router_weight_on_input: bool = False,
+            use_int8_w8a8: bool = False,
+            use_int4_w4a8: bool = False,
+            use_int4_w4a16: bool = False,
+            global_num_experts: Optional[int] = None,
+            expert_map: Optional[torch.Tensor] = None,
+            w1_scale: Optional[list[torch.Tensor]] = None,
+            w2_scale: Optional[list[torch.Tensor]] = None,
+            w1_scale_bias: torch.Tensor = None,
+            w2_scale_bias: torch.Tensor = None,
+            w1_offset: Optional[torch.Tensor] = None,
+            w2_offset: Optional[torch.Tensor] = None,
+            # For Cube/Vector parallel
+            shared_experts: Optional[Any] = None,
+            quantized_x_for_share: Optional[Any] = None,
+            dynamic_scale_for_share: Optional[Any] = None,
+            # For load balance
+            log2phy: torch.Tensor = None,
+            global_redundant_expert_num: int = 0,
+            need_trans: bool = False,
+            dynamic_eplb: bool = False,
+            mc2_mask: torch.Tensor = None,
+            pertoken_scale: Optional[torch.Tensor] = None):
+
+        assert w1_scale is not None, "w1_scale should not be None"
+        assert w2_scale is not None, "w2_scale should not be None"
+        assert expert_map is not None, "expert_map should not be None"
+        output, _ = torch.ops._C_ascend.dispatch_gmm_combine_decode(
+            x=hidden_states,
+            expert_ids=topk_ids,
+            gmm1_permuted_weight=w1[0],
+            gmm1_permuted_weight_scale=w1_scale[0],
+            gmm2_weight=w2[0],
+            gmm2_weight_scale=w2_scale[0],
+            expert_smooth_scales=None,
+            expert_scales=topk_weights.to(torch.float32),
+            group_ep=self.token_dispatcher.moe_all_to_all_group_name,
+            ep_rank_size=self.token_dispatcher.ep_world_size,
+            ep_rank_id=self.token_dispatcher.ep_rank_id,
+            moe_expert_num=len(expert_map),
+            global_bs=self.token_dispatcher.global_bs)
+        return output

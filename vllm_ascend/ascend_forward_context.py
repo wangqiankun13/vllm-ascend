@@ -24,6 +24,7 @@ class MoECommType(Enum):
     MC2 = 1
     ALLTOALL = 2
     FUSED_ALLTOALL = 3
+    FUSED_MC2 = 4
 
 
 @contextmanager
