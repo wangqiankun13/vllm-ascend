@@ -23,10 +23,8 @@
 
 constexpr uint32_t STATE_OFFSET = 512;
 constexpr uint64_t WIN_STATE_OFFSET = 512 * 1024;
-constexpr uint64_t STATE_WIN_OFFSET = 900 * 1024;
-constexpr uint64_t GROUP_TOKEN_NUM_OFFSET = 452 * 1024 + EXP_BUFFER_OFFSET;
+constexpr uint64_t EXPERT_TOKEN_COUNT_OFFSET = 452 * 1024 + EXP_BUFFER_OFFSET;
 constexpr uint64_t SOFT_SYNC_OFFSET = 476 * 1024 + EXP_BUFFER_OFFSET;
-constexpr uint32_t SELF_STATE_OFFSET = 256 * 1024;
 constexpr uint32_t SUM_TMP_TENSOR_SIZE = 1024;
 constexpr uint32_t UB_ALIGN = 32;
 constexpr uint32_t TOKEN_EXTRA_SPACE = 512;
@@ -39,7 +37,15 @@ constexpr int32_t BUFFER_NUM = 2;
 constexpr int32_t GATHER_SECOND_NUM = 2;
 constexpr uint32_t MAX_QUANT_ROW_ONCE = 8;
 constexpr uint32_t QUANT_SPACE_FACTOR = 176 * 1024 / 11;  // up to 176KB for quant
-#define OPT_RANK_OFFSET 512
+constexpr uint64_t OPT_RANK_OFFSET = 512;
+constexpr int32_t TOKEN_FLAG = 0x55555555;
+constexpr int32_t V_TO_C_FLAG = 0x03030303;
+constexpr int32_t RECV_TOKEN_FLAG_INDEX = 0;
+constexpr int32_t LOCAL_EXPERT_INDEX = 1;
+constexpr int32_t RECV_COUNT_INDEX = 2;
+constexpr int32_t EXPERT_TOKEN_COUNT_INDEX = RECV_COUNT_INDEX;
+constexpr int32_t EXPERT_INFO_COUNT = 3;
+constexpr int32_t EXPERT_INT32_STRIDE = 32;
 
 #define CEIL_UP(x) ((x + UB_ALIGN - 1) / UB_ALIGN * UB_ALIGN)
 #define CEIL(x, y) (((x) + (y - 1)) / (y))
@@ -54,17 +60,6 @@ constexpr uint32_t QUANT_SPACE_FACTOR = 176 * 1024 / 11;  // up to 176KB for qua
           ? ((GM_ADDR)(winContext_->localWindowsIn))                                                             \
           : ((GM_ADDR)(((HcclRankRelationResV2 *)(winContext_->remoteRes[rankId].nextDevicePtr))->windowsIn))) + \
      winDataSizeOffset + rankId * OPT_RANK_OFFSET)
-#define TOKEN_FLAG_1 (0x55555555)
-#define TOKEN_FLAG_2 (0x33333333)
-#define V_TO_C_FLAG_1 (0x03030303)
-#define V_TO_C_FLAG_2 (0x05050505)
-#define CV_FLAG_INDEX 0
-#define GROUP_ID_INDEX 1
-#define PRE_COUNT_INDEX 2
-#define SELF_COUNT_INDEX 3
-#define TOTAL_COUNT_INDEX 4
-#define GROUP_TOKEN_COUNT 3  // equal to SELF_COUNT_INDEX
-#define GROUP_INFO_SIZE 32
 
 namespace Catlass::Gemm::Kernel {
 
@@ -512,7 +507,7 @@ public:
 
         // state of cv flag
         statusDataSpaceGm = (GM_ADDR)(winContext_->localWindowsExp);
-        vToCFlag = V_TO_C_FLAG_1;
+        vToCFlag = V_TO_C_FLAG;
 
         BlockScheduler blockScheduler;
         BlockMmad blockMmad(resource);
@@ -541,20 +536,20 @@ public:
                        static_cast<uint8_t>(aicNum + AscendC::GetBlockIdx())};  // AIV wait for flags in latter part
         uint32_t target = 1;
         for (uint32_t groupIdx = 0; groupIdx < localExpertNum; ++groupIdx) {
-            groupTokenNumStateTensor.SetGlobalBuffer((__gm__ int32_t *)(statusDataSpaceGm + GROUP_TOKEN_NUM_OFFSET) +
-                                                     groupIdx * GROUP_INFO_SIZE);
+            groupTokenNumStateTensor.SetGlobalBuffer(
+                (__gm__ int32_t *)(statusDataSpaceGm + EXPERT_TOKEN_COUNT_OFFSET) + groupIdx * EXPERT_INT32_STRIDE);
             // wait AIV recv needed tokens
             while (true) {
                 __asm__ __volatile__("");
                 AscendC::DataCacheCleanAndInvalid<int32_t, AscendC::CacheLine::SINGLE_CACHE_LINE,
                                                   AscendC::DcciDst::CACHELINE_OUT>(groupTokenNumStateTensor);
                 __asm__ __volatile__("");
-                if (groupTokenNumStateTensor.GetValue(0) == coreNumPerGroup * vToCFlag) {
+                if (groupTokenNumStateTensor.GetValue(RECV_TOKEN_FLAG_INDEX) == coreNumPerGroup * vToCFlag) {
                     break;
                 }
             }
 
-            uint32_t currentM = groupTokenNumStateTensor.GetValue(GROUP_TOKEN_COUNT);
+            uint32_t currentM = groupTokenNumStateTensor.GetValue(EXPERT_TOKEN_COUNT_INDEX);
             GemmCoord inGroupProblemShape{currentM, params.problemShape.n(), params.problemShape.k()};
 
             LayoutA layoutA = params.layoutA.GetTileLayout(inGroupProblemShape.GetCoordMK());
@@ -1242,16 +1237,17 @@ public:
         AscendC::PipeBarrier<PIPE_ALL>();
         AscendC::LocalTensor<int32_t> tmpLocalTensor = resource.ubBuf.template GetBufferByByte<int32_t>(0);
         ubOffset += CEIL_UP(UB_BLOCK_SIZE);
-        tmpLocalTensor.SetValue(CV_FLAG_INDEX, vToCFlag);
-        tmpLocalTensor.SetValue(GROUP_ID_INDEX, groupId);
-        tmpLocalTensor.SetValue(SELF_COUNT_INDEX, coreTokenCount);
+        tmpLocalTensor.SetValue(RECV_TOKEN_FLAG_INDEX, vToCFlag);
+        tmpLocalTensor.SetValue(LOCAL_EXPERT_INDEX, groupId);
+        tmpLocalTensor.SetValue(RECV_COUNT_INDEX, coreTokenCount);
         AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
 
         AscendC::GlobalTensor<int32_t> groupTokenNumStateTensor;
-        groupTokenNumStateTensor.SetGlobalBuffer((__gm__ int32_t *)(statusDataSpaceGm + GROUP_TOKEN_NUM_OFFSET));
+        groupTokenNumStateTensor.SetGlobalBuffer((__gm__ int32_t *)(statusDataSpaceGm + EXPERT_TOKEN_COUNT_OFFSET));
         AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
         AscendC::SetAtomicAdd<int32_t>();
-        AscendC::DataCopy(groupTokenNumStateTensor[groupId * GROUP_INFO_SIZE], tmpLocalTensor, INT32_COUNT_PER_BLOCK);
+        AscendC::DataCopy(
+            groupTokenNumStateTensor[groupId * EXPERT_INT32_STRIDE], tmpLocalTensor, INT32_COUNT_PER_BLOCK);
         AscendC::SetAtomicNone();
         AscendC::PipeBarrier<PIPE_ALL>();
     }
@@ -1280,18 +1276,18 @@ public:
             AscendC::GlobalTensor<int32_t> groupTokenNumStateTensor;
             for (uint32_t groupIdx = 0; groupIdx < localExpertNum; ++groupIdx) {
                 // just like AIC
-                groupTokenNumStateTensor.SetGlobalBuffer((__gm__ int32_t *)(statusDataSpaceGm + GROUP_TOKEN_NUM_OFFSET) +
-                                                        groupIdx * GROUP_INFO_SIZE);
+                groupTokenNumStateTensor.SetGlobalBuffer((
+                    __gm__ int32_t *)(statusDataSpaceGm + EXPERT_TOKEN_COUNT_OFFSET) + groupIdx * EXPERT_INT32_STRIDE);
                 while (true) {
                     __asm__ __volatile__("");
                     AscendC::DataCacheCleanAndInvalid<int32_t, AscendC::CacheLine::SINGLE_CACHE_LINE,
                                                     AscendC::DcciDst::CACHELINE_OUT>(groupTokenNumStateTensor);
                     __asm__ __volatile__("");
-                    if (groupTokenNumStateTensor.GetValue(0) == coreNumPerGroup * vToCFlag) {
+                    if (groupTokenNumStateTensor.GetValue(RECV_TOKEN_FLAG_INDEX) == coreNumPerGroup * vToCFlag) {
                         break;
                     }
                 }
-                uint32_t currentM = groupTokenNumStateTensor.GetValue(GROUP_TOKEN_COUNT);
+                uint32_t currentM = groupTokenNumStateTensor.GetValue(EXPERT_TOKEN_COUNT_INDEX);
                 GemmCoord inGroupProblemShape{currentM, n, k};
                 LayoutPerTokenScale layoutPerTokenScale =
                     wholeLayoutPerTokenScale.GetTileLayout(inGroupProblemShape.template GetCoordByAxis<0>());
@@ -1332,18 +1328,6 @@ public:
                 startCoreIdx = (startCoreIdx + coreLoops) % aiCoreGroupNum;
             }
         }
-        // clean
-        AscendC::PipeBarrier<PIPE_ALL>();
-        AscendC::GlobalTensor<int32_t> softSyncTensor;
-        softSyncTensor.SetGlobalBuffer((__gm__ int32_t *)(statusDataSpaceGm + SOFT_SYNC_OFFSET));
-        AscendC::LocalTensor<int32_t> tmpZeroLocalTensor = resource.ubBuf.template GetBufferByByte<int32_t>(0);
-        AscendC::Duplicate(tmpZeroLocalTensor, (int32_t)0, INT32_COUNT_PER_BLOCK);
-        AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
-        AscendC::DataCopy(softSyncTensor[compCoreIdx * SOFT_SYNC_SPACE_SIZE / sizeof(int32_t)], tmpZeroLocalTensor,
-                        INT32_COUNT_PER_BLOCK);
-        AscendC::DataCopy(softSyncTensor[(compCoreIdx + compCoreNum) * SOFT_SYNC_SPACE_SIZE / sizeof(int32_t)],
-                        tmpZeroLocalTensor, INT32_COUNT_PER_BLOCK);
     }
 
     CATLASS_DEVICE
@@ -1411,40 +1395,63 @@ public:
         // state of data sapce
         dataState = 0;
         state = 0;
-        vToCFlag = V_TO_C_FLAG_1;
+        vToCFlag = V_TO_C_FLAG;
         winDataSizeOffset = dataState * epRankSize * expertPerSizeOnWin * moeExpertNumPerRank;
         GM_ADDR statusSpaceGm_ = GET_WIND_STATE_ADDR_BY_RANK_ID(epRankId);
         sumTarget = (float)1.0;
-        tokenFlag = TOKEN_FLAG_1;
+        tokenFlag = TOKEN_FLAG;
     }
 
     CATLASS_DEVICE
     void UpdateAndCleanInfo(__gm__ ElementGroupList_ *ptrGroupList, GM_ADDR gmEpSendCount)
     {
-        if (aivIdx == aiCoreGroupNum * subBlockNum - 1) {
-            // clean
-            AscendC::GlobalTensor<int32_t> groupTokenNumStateTensor;
-            groupTokenNumStateTensor.SetGlobalBuffer((__gm__ int32_t *)(statusDataSpaceGm + GROUP_TOKEN_NUM_OFFSET));
 
-            uint32_t recStatusNumPerCore = isShareExpert ? epRankSize : expertCntUp;
-            uint32_t startStatusIndex = 0;
-            AscendC::DataCopyParams zerosParams{static_cast<uint16_t>(recStatusNumPerCore),
+        AscendC::LocalTensor<int32_t> tmpZeroLocalTensor = resource.ubBuf.template GetBufferByByte<int32_t>(0);
+        int32_t totalFlagNum = isShareExpert ? epRankSize : expertCntUp;
+        int32_t flagNumPerCore = totalFlagNum / aivNum;
+        int32_t remainFlagNum = totalFlagNum % aivNum;
+        int32_t startFlagIdx = aivIdx * flagNumPerCore;
+        if (aivIdx < remainFlagNum) {
+            flagNumPerCore += 1;
+            startFlagIdx += aivIdx;
+        } else {
+            startFlagIdx += remainFlagNum;
+        }
+        int32_t zeroBlockNum = flagNumPerCore > localExpertNum ? flagNumPerCore : localExpertNum;
+        AscendC::Duplicate(tmpZeroLocalTensor, (int32_t)0, zeroBlockNum * INT32_COUNT_PER_BLOCK);
+        AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
+
+        AscendC::GlobalTensor<int32_t> softSyncTensor;
+        softSyncTensor.SetGlobalBuffer((__gm__ int32_t *)(
+            statusDataSpaceGm + SOFT_SYNC_OFFSET + aivIdx * SOFT_SYNC_SPACE_SIZE));
+        AscendC::DataCopyParams cleanSoftSyncParams{static_cast<uint16_t>(1), sizeof(int32_t), 0, 0};
+        AscendC::DataCopyPad(softSyncTensor, tmpZeroLocalTensor, cleanSoftSyncParams);
+
+        if (startFlagIdx < totalFlagNum) {
+            AscendC::GlobalTensor<int32_t> windowInstatusInt32Tensor;
+            windowInstatusInt32Tensor.SetGlobalBuffer((__gm__ int32_t *)(
+                GET_WIND_STATE_ADDR_BY_RANK_ID(epRankId) + startFlagIdx * stateOffset));
+            AscendC::DataCopyParams cleanFlagParams{static_cast<uint16_t>(flagNumPerCore),
                                                 2 * sizeof(int32_t),
                                                 0,
                                                 static_cast<uint16_t>(stateOffset - 2 * sizeof(int32_t))};
-            AscendC::GlobalTensor<int32_t> windowInstatusInt32Tensor;
-            windowInstatusInt32Tensor.SetGlobalBuffer((__gm__ int32_t *)GET_WIND_STATE_ADDR_BY_RANK_ID(epRankId));
-
-            AscendC::LocalTensor<int32_t> tmpZeroLocalTensor = resource.ubBuf.template GetBufferByByte<int32_t>(0);
-            int32_t zerosNum = expertCntUp * INT32_COUNT_PER_BLOCK > GROUP_INFO_SIZE * localExpertNum ? \
-                                expertCntUp * INT32_COUNT_PER_BLOCK : GROUP_INFO_SIZE * localExpertNum;
-            AscendC::Duplicate(tmpZeroLocalTensor, (int32_t)0, zerosNum);
-            AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
-            AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
-            AscendC::DataCopy(groupTokenNumStateTensor, tmpZeroLocalTensor, GROUP_INFO_SIZE * localExpertNum);
-            AscendC::DataCopyPad(windowInstatusInt32Tensor[startStatusIndex * stateOffset / sizeof(int32_t)],
-                                tmpZeroLocalTensor, zerosParams);
+            AscendC::DataCopyPad(windowInstatusInt32Tensor, tmpZeroLocalTensor, cleanFlagParams);
         }
+
+        if (aivIdx == aiCoreGroupNum * subBlockNum - 1) {
+            AscendC::GlobalTensor<int32_t> groupTokenNumStateTensor;
+            groupTokenNumStateTensor.SetGlobalBuffer((__gm__ int32_t *)(
+                statusDataSpaceGm + EXPERT_TOKEN_COUNT_OFFSET));
+            AscendC::DataCopyParams cleanCountParams{static_cast<uint16_t>(localExpertNum),
+                                        EXPERT_INFO_COUNT * sizeof(int32_t),
+                                        0,
+                                        static_cast<uint16_t>(
+                                            (EXPERT_INT32_STRIDE - EXPERT_INFO_COUNT) * sizeof(int32_t))};
+            AscendC::DataCopy(groupTokenNumStateTensor, tmpZeroLocalTensor, cleanCountParams);
+        }
+        AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(0);
 
         if (isRecvCore && recvCoreIdx == (recvCoreNum - 1)) {
             // record token count for each local expert
