@@ -37,7 +37,6 @@ constexpr int32_t BUFFER_NUM = 2;
 constexpr int32_t GATHER_SECOND_NUM = 2;
 constexpr uint32_t MAX_QUANT_ROW_ONCE = 8;
 constexpr uint32_t QUANT_SPACE_FACTOR = 176 * 1024 / 11;  // up to 176KB for quant
-constexpr uint64_t OPT_RANK_OFFSET = 512;
 constexpr int32_t TOKEN_FLAG = 0x55555555;
 constexpr int32_t V_TO_C_FLAG = 0x03030303;
 constexpr int32_t RECV_TOKEN_FLAG_INDEX = 0;
@@ -1405,7 +1404,6 @@ public:
     CATLASS_DEVICE
     void UpdateAndCleanInfo(__gm__ ElementGroupList_ *ptrGroupList, GM_ADDR gmEpSendCount)
     {
-
         AscendC::LocalTensor<int32_t> tmpZeroLocalTensor = resource.ubBuf.template GetBufferByByte<int32_t>(0);
         int32_t totalFlagNum = isShareExpert ? epRankSize : expertCntUp;
         int32_t flagNumPerCore = totalFlagNum / aivNum;
@@ -1448,7 +1446,7 @@ public:
                                         0,
                                         static_cast<uint16_t>(
                                             (EXPERT_INT32_STRIDE - EXPERT_INFO_COUNT) * sizeof(int32_t))};
-            AscendC::DataCopy(groupTokenNumStateTensor, tmpZeroLocalTensor, cleanCountParams);
+            AscendC::DataCopyPad(groupTokenNumStateTensor, tmpZeroLocalTensor, cleanCountParams);
         }
         AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(0);
         AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(0);

@@ -10,7 +10,6 @@
 
 #ifndef CAM_MOE_DISTRIBUTE_DISPATCH_H
 #define CAM_MOE_DISTRIBUTE_DISPATCH_H
-#define OPT_RANK_OFFSET 512
 
 #include "kernel_operator.h"
 #include "kernel_tiling/kernel_tiling.h"
