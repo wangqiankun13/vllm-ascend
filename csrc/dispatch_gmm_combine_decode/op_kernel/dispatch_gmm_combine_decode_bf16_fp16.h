@@ -110,9 +110,9 @@ CATLASS_DEVICE void GmmDeqSwigluQuant(GemmCoord problemShape, uint32_t groupCoun
 
     using GemmKernel = typename std::conditional<
         (EXEC_FLAG & EXEC_FLAG_DEEP_FUSE),
-        Gemm::Kernel::GroupedMatmulSliceMSwigluQuantMultiStageWorkspace<
+        Gemm::Kernel::GroupedMatmulSliceMSwigluMultiStageWorkspace<
             TemplateMC2TypeFunc, BlockMmad, BlockEpilogue, BlockScheduler, WORKSPACE_STAGES, ElementGroupList>,
-        Gemm::Kernel::GroupedMatmulSliceMSwigluQuantMultiStageWorkspaceWithShallowDispatch<
+        Gemm::Kernel::GroupedMatmulSliceMSwigluMultiStageWorkspaceWithShallowDispatch<
             TemplateMC2TypeFunc, BlockMmad, BlockEpilogue, BlockScheduler, WORKSPACE_STAGES, ElementGroupList>>::type;
 
     if constexpr (EXEC_FLAG & EXEC_FLAG_DEEP_FUSE) {

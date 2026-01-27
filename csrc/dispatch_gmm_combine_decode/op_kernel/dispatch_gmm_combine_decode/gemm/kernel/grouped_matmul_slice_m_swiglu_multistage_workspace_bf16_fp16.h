@@ -77,8 +77,8 @@ class SwigluPost
 public:
     using ElementInput = float;
     using LayoutInput = layout::RowMajor;
-    using ElementDequantScale = float;
-    using LayoutDequantScale = layout::VectorLayout;
+    using ElementSwigluScale = float;
+    using LayoutSwigluScale = layout::VectorLayout;
     using ElementOutput = ElementOutput_;
     using LayoutOutput = layout::RowMajor;
 
@@ -90,8 +90,8 @@ public:
     struct Params {
         __gm__ ElementInput *ptrInput{nullptr};
         LayoutInput layoutInput;
-        __gm__ ElementDequantScale *ptrDequantScale{nullptr};
-        LayoutDequantScale layoutDequantScale;
+        __gm__ ElementSwigluScale *ptrSwigluScale{nullptr};
+        LayoutSwigluScale layoutSwigluScale;
         __gm__ ElementOutput *ptrOutput{nullptr};
         LayoutOutput layoutOutput;
         uint32_t tileRow;
@@ -102,13 +102,13 @@ public:
 
         CATLASS_DEVICE
         Params(__gm__ ElementInput *ptrInput_, LayoutInput const &layoutInput_,
-               __gm__ ElementDequantScale *ptrQuantScale_, LayoutDequantScale const &layoutQuantScale_,
+               __gm__ ElementSwigluScale *ptrSwigluScale_, LayoutSwigluScale const &layoutSwigluScale_,
                __gm__ ElementOutput *ptrOutput_, LayoutOutput const layoutOutput_, const uint32_t tileRow_,
                const uint32_t tileColumn_)
             : ptrInput(ptrInput_),
               layoutInput(layoutInput_),
-              ptrDequantScale(ptrQuantScale_),
-              layoutDequantScale(layoutQuantScale_),
+              ptrSwigluScale(ptrSwigluScale_),
+              layoutSwigluScale(layoutSwigluScale_),
               ptrOutput(ptrOutput_),
               layoutOutput(layoutOutput_),
               tileRow(tileRow_),
@@ -176,7 +176,7 @@ public:
             layout::RowMajor layoutUbInput{actualTileShape, ubTileStride};
 
             AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(0);
-            // continue swiglu computing here and then quant
+            // continue swiglu computing here
             copyGmToUbInput(ubInput, gmTileInput, layoutUbInput, layoutGmTileInput);
             copyGmToUbInput(ubInputRightHalf, gmTileInput[params.layoutInput.shape(1) >> 1], layoutUbInput, layoutGmTileInput);
             AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
@@ -267,7 +267,7 @@ private:
 
 template <TemplateMC2TypeClass, class BlockMmad_, class BlockEpilogue_, class BlockScheduler_, uint32_t WORKSPACE_STAGES_,
           class ElementGroupList_>
-class GroupedMatmulSliceMSwigluQuantMultiStageWorkspace
+class GroupedMatmulSliceMSwigluMultiStageWorkspace
 {
 public:
     using BlockMmad = BlockMmad_;
@@ -291,8 +291,8 @@ public:
     using EpilogueParams = typename BlockEpilogue::Params;
 
     using XType = ExpandXType;
-    using ElementDequantScale = typename SwigluPost<ArchTag, XType>::ElementDequantScale;
-    using LayoutDequantScale = typename SwigluPost<ArchTag, XType>::LayoutDequantScale;
+    using ElementSwigluScale = typename SwigluPost<ArchTag, XType>::ElementSwigluScale;
+    using LayoutSwigluScale = typename SwigluPost<ArchTag, XType>::LayoutSwigluScale;
     using ElementOutput = typename SwigluPost<ArchTag, XType>::ElementOutput;
     using LayoutOutput = typename SwigluPost<ArchTag, XType>::LayoutOutput;
 
@@ -317,8 +317,8 @@ public:
         LayoutPerTokenScale layoutPerTokenScale;
         __gm__ ElementOutput *ptrOutput;
         LayoutOutput layoutOutput;
-        __gm__ ElementDequantScale *ptrDequantScale;
-        LayoutDequantScale layoutDequantScale;
+        __gm__ ElementSwigluScale *ptrSwigluScale;
+        LayoutSwigluScale layoutSwigluScale;
         GM_ADDR ptrWorkspace;
         GM_ADDR gmX;
         GM_ADDR debugGm;
@@ -350,7 +350,7 @@ public:
                LayoutA const &layoutA_, GM_ADDR ptrB_, LayoutB const &layoutB_, GM_ADDR ptrScale_,
                LayoutScale const &layoutScale_, GM_ADDR ptrPerTokenScale_,
                LayoutPerTokenScale const &layoutPerTokenScale_, GM_ADDR ptrOutput_, LayoutOutput const &layoutOutput_,
-               GM_ADDR ptrDequantScale_, LayoutDequantScale const &layoutDequantScale_, GM_ADDR ptrWorkspace_,
+               GM_ADDR ptrSwigluScale_, LayoutSwigluScale const &layoutSwigluScale_, GM_ADDR ptrWorkspace_,
                GM_ADDR gmX_, GM_ADDR debugGm_, GM_ADDR gmexpertIds_, GM_ADDR gmExpandIdx_, GM_ADDR gmEpSendCount_, GM_ADDR gmXActiveMask_,
                GM_ADDR gmResvered_, GM_ADDR gmExpertTokenNums_, uint32_t epRankSize_, uint32_t epRankId_,
                uint32_t moeExpertNum_, uint32_t moeExpertNumPerRank_, uint32_t sharedExpertNum_,
@@ -369,8 +369,8 @@ public:
               layoutPerTokenScale(layoutPerTokenScale_),
               ptrOutput(reinterpret_cast<__gm__ ElementOutput *>(ptrOutput_)),
               layoutOutput(layoutOutput_),
-              ptrDequantScale(reinterpret_cast<__gm__ ElementDequantScale *>(ptrDequantScale_)),
-              layoutDequantScale(layoutDequantScale_),
+              ptrSwigluScale(reinterpret_cast<__gm__ ElementSwigluScale *>(ptrSwigluScale_)),
+              layoutSwigluScale(layoutSwigluScale_),
               ptrWorkspace(ptrWorkspace_),
               gmX(gmX_),
               debugGm(debugGm_),
@@ -396,7 +396,7 @@ public:
 
     // Methods
     CATLASS_DEVICE
-    GroupedMatmulSliceMSwigluQuantMultiStageWorkspace() {}
+    GroupedMatmulSliceMSwigluMultiStageWorkspace() {}
 
     template <int32_t CORE_TYPE = g_coreType>
     CATLASS_DEVICE void operator()(Params const &params);
@@ -689,46 +689,6 @@ public:
             rankGMTensor.SetGlobalBuffer((__gm__ int32_t *)rankGM);
             AscendC::DataCopy<int32_t>(rankGMTensor, statusTensor_[rankIndex * 8], 8UL);
         }
-    }
-
-    CATLASS_DEVICE
-    void QuantToken(AscendC::LocalTensor<XType> &xInTensor, AscendC::LocalTensor<int8_t> &yInt8Tensor, int64_t ubOffset)
-    {
-        int64_t subUbOffset = ubOffset;
-        AscendC::LocalTensor<float> xFp32TmpTensor = resource.ubBuf.template GetBufferByByte<float>(subUbOffset);
-        subUbOffset += CEIL_UP(tokenLength * sizeof(float));
-        AscendC::LocalTensor<float> xFp32AbsTensor = resource.ubBuf.template GetBufferByByte<float>(subUbOffset);
-        subUbOffset += CEIL_UP(tokenLength * sizeof(float));
-        AscendC::LocalTensor<float> xRowMaxTensor = resource.ubBuf.template GetBufferByByte<float>(subUbOffset);
-        subUbOffset += CEIL_UP(UB_BLOCK_SIZE);
-        AscendC::LocalTensor<int32_t> ytmpInt32Tensor = xFp32TmpTensor.template ReinterpretCast<int32_t>();
-        AscendC::LocalTensor<half> yHalfTensor = xFp32TmpTensor.template ReinterpretCast<half>();
-        AscendC::LocalTensor<float> yFp32Tensor = yInt8Tensor.template ReinterpretCast<float>();
-        AscendC::LocalTensor<int32_t> yInt32Tensor = yInt8Tensor.template ReinterpretCast<int32_t>();
-
-        AscendC::Cast(xFp32TmpTensor, xInTensor, AscendC::RoundMode::CAST_NONE, tokenLength);
-        AscendC::PipeBarrier<PIPE_V>();
-        AscendC::Abs(xFp32AbsTensor, xFp32TmpTensor, tokenLength);
-        AscendC::PipeBarrier<PIPE_V>();
-        AscendC::ReduceMax(xRowMaxTensor, xFp32AbsTensor, xFp32AbsTensor, tokenLength, false);
-        AscendC::PipeBarrier<PIPE_V>();
-
-        AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
-        float dynamicQuantScale = float(127.0) / xRowMaxTensor.GetValue(0);
-        yFp32Tensor.SetValue(tokenLength / sizeof(float), float(1.0) / dynamicQuantScale);
-        yInt32Tensor.SetValue(tokenLength / sizeof(int32_t) + 1, tokenFlag);
-        AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
-        AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
-
-        AscendC::Muls(xFp32TmpTensor, xFp32TmpTensor, dynamicQuantScale, tokenLength);
-        AscendC::PipeBarrier<PIPE_V>();
-        AscendC::Cast(ytmpInt32Tensor, xFp32TmpTensor, AscendC::RoundMode::CAST_RINT, tokenLength);
-        AscendC::PipeBarrier<PIPE_V>();
-        AscendC::Cast(yHalfTensor, ytmpInt32Tensor, AscendC::RoundMode::CAST_ROUND, tokenLength);
-        AscendC::PipeBarrier<PIPE_V>();
-        AscendC::Cast(yInt8Tensor, yHalfTensor, AscendC::RoundMode::CAST_TRUNC, tokenLength);
     }
 
     CATLASS_DEVICE
@@ -1303,7 +1263,7 @@ public:
         }
 
         hOutSize = tokenLength * sizeof(XType);
-        scaleParamPad = TOKEN_EXTRA_SPACE;  // 512B for dynamic quant scale
+        scaleParamPad = TOKEN_EXTRA_SPACE;
         hCommuSize = hOutSize + scaleParamPad;
         axisHCommu = hCommuSize / sizeof(int8_t);
         axisHCommuBf16Fp16 = hCommuSize / sizeof(XType);
@@ -1460,7 +1420,6 @@ public:
 
         UpdateAndCleanInfo(params.ptrGroupList, params.gmEpSendCount, params.gmExpertTokenNums);
         {
-            // dynamic quant
             AscendC::GlobalTensor<int32_t> sendCountsGlobal;
             sendCountsGlobal.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(params.gmEpSendCount));
             __asm__ __volatile__("");
@@ -1471,21 +1430,21 @@ public:
             AscendC::PipeBarrier<PIPE_ALL>();
             uint32_t n = params.problemShape.n();
             uint32_t nOut = params.problemShape.n() / 2;
-            uint32_t quantRowOnce = 0;
-            CalQuantRow(nOut, quantRowOnce);
+            uint32_t swigluRowOnce = 0;
+            CalQuantRow(nOut, swigluRowOnce);
             auto swigluLayout = layout::RowMajor{totalTokenCount, n};
-            typename SwigluPost<ArchTag, XType>::Params quantParams{
-                gmSwigluOutput,   swigluLayout,        params.ptrDequantScale, params.layoutDequantScale,
-                params.ptrOutput, params.layoutOutput, quantRowOnce,           nOut};
+            typename SwigluPost<ArchTag, XType>::Params swigluParams{
+                gmSwigluOutput,   swigluLayout,        params.ptrSwigluScale, params.layoutSwigluScale,
+                params.ptrOutput, params.layoutOutput, swigluRowOnce,           nOut};
 
-            SwigluPost<ArchTag, XType> blockQuant(resource, quantParams);
-            MatrixCoord quantShape(totalTokenCount, nOut);
-            MatrixCoord quantBlockShape((uint16_t)(subBlockNum * quantRowOnce), nOut);
-            Epilogue::Tile::EpilogueHorizontalTileSwizzle quantSwizzle(quantShape, quantBlockShape);
-            for (uint32_t loopIdx = aiCoreGroupIdx; loopIdx < quantSwizzle.GetLoops(); loopIdx += aiCoreGroupNum) {
-                auto blockCoord = quantSwizzle.GetTileCoord(loopIdx);
-                auto actualBlockShape = quantSwizzle.GetActualTileShape(blockCoord);
-                blockQuant(quantBlockShape, blockCoord, actualBlockShape);
+            SwigluPost<ArchTag, XType> blockSwiglu(resource, swigluParams);
+            MatrixCoord swigluShape(totalTokenCount, nOut);
+            MatrixCoord swigluBlockShape((uint16_t)(subBlockNum * swigluRowOnce), nOut);
+            Epilogue::Tile::EpilogueHorizontalTileSwizzle swigluSwizzle(swigluShape, swigluBlockShape);
+            for (uint32_t loopIdx = aiCoreGroupIdx; loopIdx < swigluSwizzle.GetLoops(); loopIdx += aiCoreGroupNum) {
+                auto blockCoord = swigluSwizzle.GetTileCoord(loopIdx);
+                auto actualBlockShape = swigluSwizzle.GetActualTileShape(blockCoord);
+                blockSwiglu(swigluBlockShape, blockCoord, actualBlockShape);
             }
         }
     }
@@ -1599,7 +1558,7 @@ namespace Catlass::Gemm::Kernel {
 
 template <TemplateMC2TypeClass, class BlockMmad_, class BlockEpilogue_, class BlockScheduler_, uint32_t WORKSPACE_STAGES_,
           class ElementGroupList_>
-class GroupedMatmulSliceMSwigluQuantMultiStageWorkspaceWithShallowDispatch
+class GroupedMatmulSliceMSwigluMultiStageWorkspaceWithShallowDispatch
 {
 public:
     using BlockMmad = BlockMmad_;
@@ -1623,8 +1582,8 @@ public:
     using EpilogueParams = typename BlockEpilogue::Params;
 
     using XType = ExpandXType;
-    using ElementDequantScale = typename SwigluPost<ArchTag, XType>::ElementDequantScale;
-    using LayoutDequantScale = typename SwigluPost<ArchTag, XType>::LayoutDequantScale;
+    using ElementSwigluScale = typename SwigluPost<ArchTag, XType>::ElementSwigluScale;
+    using LayoutSwigluScale = typename SwigluPost<ArchTag, XType>::LayoutSwigluScale;
     using ElementOutput = typename SwigluPost<ArchTag, XType>::ElementOutput;
     using LayoutOutput = typename SwigluPost<ArchTag, XType>::LayoutOutput;
 
@@ -1648,8 +1607,8 @@ public:
         LayoutPerTokenScale layoutPerTokenScale;
         __gm__ ElementOutput *ptrOutput;
         LayoutOutput layoutOutput;
-        __gm__ ElementDequantScale *ptrDequantScale;
-        LayoutDequantScale layoutDequantScale;
+        __gm__ ElementSwigluScale *ptrSwigluScale;
+        LayoutSwigluScale layoutSwigluScale;
         GM_ADDR ptrWorkspace;
 
         // Methods
@@ -1661,7 +1620,7 @@ public:
                LayoutA const &layoutA_, GM_ADDR ptrB_, LayoutB const &layoutB_, GM_ADDR ptrScale_,
                LayoutScale const &layoutScale_, GM_ADDR ptrPerTokenScale_,
                LayoutPerTokenScale const &layoutPerTokenScale_, GM_ADDR ptrOutput_, LayoutOutput const &layoutOutput_,
-               GM_ADDR ptrDequantScale_, LayoutDequantScale const &layoutDequantScale_, GM_ADDR ptrWorkspace_)
+               GM_ADDR ptrSwigluScale_, LayoutSwigluScale const &layoutSwigluScale_, GM_ADDR ptrWorkspace_)
             : problemShape(problemShape_),
               problemCount(problemCount_),
               ptrGroupList(reinterpret_cast<__gm__ ElementGroupList *>(ptrGroupList_)),
@@ -1675,15 +1634,15 @@ public:
               layoutPerTokenScale(layoutPerTokenScale_),
               ptrOutput(reinterpret_cast<__gm__ ElementOutput *>(ptrOutput_)),
               layoutOutput(layoutOutput_),
-              ptrDequantScale(reinterpret_cast<__gm__ ElementDequantScale *>(ptrDequantScale_)),
-              layoutDequantScale(layoutDequantScale_),
+              ptrSwigluScale(reinterpret_cast<__gm__ ElementSwigluScale *>(ptrSwigluScale_)),
+              layoutSwigluScale(layoutSwigluScale_),
               ptrWorkspace(ptrWorkspace_)
         {}
     };
 
     // Methods
     CATLASS_DEVICE
-    GroupedMatmulSliceMSwigluQuantMultiStageWorkspaceWithShallowDispatch()
+    GroupedMatmulSliceMSwigluMultiStageWorkspaceWithShallowDispatch()
     {
         Arch::FlagID flagId = 0;
         for (uint32_t stageId = 0; stageId < WORKSPACE_STAGES; ++stageId) {
@@ -1869,27 +1828,27 @@ public:
         Arch::CrossCoreBarrier<0x0, PIPE_MTE3>();
 
         {
-            uint32_t quantRowOnce = 0;
-            CalQuantRow(nOut, quantRowOnce);
+            uint32_t swigluRowOnce = 0;
+            CalQuantRow(nOut, swigluRowOnce);
             auto swigluLayout = layout::RowMajor{mActual, n};
-            typename SwigluPost<ArchTag, XType>::Params quantParams{ptrD,
+            typename SwigluPost<ArchTag, XType>::Params swigluParams{ptrD,
                                                              swigluLayout,
-                                                             params.ptrDequantScale,
-                                                             params.layoutDequantScale,
+                                                             params.ptrSwigluScale,
+                                                             params.layoutSwigluScale,
                                                              params.ptrOutput,
                                                              params.layoutOutput,
-                                                             quantRowOnce,
+                                                             swigluRowOnce,
                                                              nOut};
 
-            SwigluPost<ArchTag, XType> blockQuant(resource, quantParams);
-            MatrixCoord quantShape(mActual, nOut);
-            MatrixCoord quantBlockShape((uint16_t)(AscendC::GetSubBlockNum() * quantRowOnce), nOut);
-            Epilogue::Tile::EpilogueHorizontalTileSwizzle quantSwizzle(quantShape, quantBlockShape);
-            for (uint32_t loopIdx = coreIdx; loopIdx < quantSwizzle.GetLoops(); loopIdx += coreNum) {
-                auto blockCoord = quantSwizzle.GetTileCoord(loopIdx);
-                auto actualBlockShape = quantSwizzle.GetActualTileShape(blockCoord);
+            SwigluPost<ArchTag, XType> blockSwiglu(resource, swigluParams);
+            MatrixCoord swigluShape(mActual, nOut);
+            MatrixCoord swigluBlockShape((uint16_t)(AscendC::GetSubBlockNum() * swigluRowOnce), nOut);
+            Epilogue::Tile::EpilogueHorizontalTileSwizzle swigluSwizzle(swigluShape, swigluBlockShape);
+            for (uint32_t loopIdx = coreIdx; loopIdx < swigluSwizzle.GetLoops(); loopIdx += coreNum) {
+                auto blockCoord = swigluSwizzle.GetTileCoord(loopIdx);
+                auto actualBlockShape = swigluSwizzle.GetActualTileShape(blockCoord);
 
-                blockQuant(quantBlockShape, blockCoord, actualBlockShape);
+                blockSwiglu(swigluBlockShape, blockCoord, actualBlockShape);
             }
         }
     }
@@ -1899,7 +1858,7 @@ private:
     friend struct AicSetFunc;
 
     struct AicWaitFunc {
-        using MatmulKernel = GroupedMatmulSliceMSwigluQuantMultiStageWorkspaceWithShallowDispatch<
+        using MatmulKernel = GroupedMatmulSliceMSwigluMultiStageWorkspaceWithShallowDispatch<
             TemplateMC2TypeFunc, BlockMmad, BlockEpilogue, BlockScheduler, WORKSPACE_STAGES, ElementGroupList>;
 
         CATLASS_DEVICE
@@ -1916,7 +1875,7 @@ private:
     };
 
     struct AicSetFunc {
-        using MatmulKernel = GroupedMatmulSliceMSwigluQuantMultiStageWorkspaceWithShallowDispatch<
+        using MatmulKernel = GroupedMatmulSliceMSwigluMultiStageWorkspaceWithShallowDispatch<
             TemplateMC2TypeFunc, BlockMmad, BlockEpilogue, BlockScheduler, WORKSPACE_STAGES, ElementGroupList>;
 
         CATLASS_DEVICE
