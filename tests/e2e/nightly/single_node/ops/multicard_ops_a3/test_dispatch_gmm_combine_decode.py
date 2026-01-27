@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import time
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -240,7 +241,7 @@ class SmallOps(DecodeMoeOps):
             shared_expert_num=1,
             shared_expert_rank_num=self.shared_expert_rank_num,
             global_bs=self.batch_size * self.ep_world_size)
-        return (combine_output, expert_token_nums, expand_x) # for debug
+        return (combine_output, expert_token_nums)
 
 
 class FusionOp(DecodeMoeOps):
@@ -268,7 +269,7 @@ class FusionOp(DecodeMoeOps):
 
     def _apply_ops(self, x, expert_ids, smooth_scales, expert_scales,
                    x_active_mask):
-        smooth_scales = torch.zeros(128 * 1024 * 1024).npu() # for debug
+        smooth_scales = torch.zeros(128 * 1024 * 1024).npu()
         output = torch.ops._C_ascend.dispatch_gmm_combine_decode(
             x=x,
             expert_ids=expert_ids,
@@ -287,7 +288,7 @@ class FusionOp(DecodeMoeOps):
             shared_expert_rank_num=self.shared_expert_rank_num,
             quant_mode=0,
             global_bs=self.batch_size * self.ep_world_size)
-        return (*output, smooth_scales) # for debug
+        return output
 
     def _process_weights_after_loading(self, gmm1_weight, gmm1_weight_scale,
                                        gmm2_weight, gmm2_weight_scale):
@@ -344,7 +345,7 @@ def generate_datas(batch_size,
     gmm1_output_dim = moe_intermediate_size * 2
     gmm2_input_dim = moe_intermediate_size
     gmm2_output_dim = token_hidden_size
-    x = torch.rand([actual_bs, token_hidden_size]) * 10 - 5
+    x = torch.rand([actual_bs, token_hidden_size]) * 0.5 - 0.5
     expert_ids = torch.arange(
         global_rank_id * batch_size * top_k,
         global_rank_id * batch_size * top_k + actual_bs * top_k).to(
@@ -386,10 +387,10 @@ def generate_datas(batch_size,
                 local_expert_num, gmm2_input_dim, gmm2_output_dim
             ]).to(torch.bfloat16 if test_bfloat16 else torch.float16) * 0.5
         else:
-            gmm1_weight = torch.rand([local_expert_num, gmm1_input_dim, gmm1_output_dim]).to(torch.bfloat16 if test_bfloat16 else torch.float16)
-            gmm2_weight = torch.rand([local_expert_num, gmm2_input_dim, gmm2_output_dim]).to(torch.bfloat16 if test_bfloat16 else torch.float16)
-        gmm1_weight[:, :, ::2] = gmm1_weight[:, :, ::2] * -1
-        gmm2_weight[:, :, ::2] = gmm2_weight[:, :, ::2] * -1
+            gmm1_weight = torch.rand([local_expert_num, gmm1_input_dim, gmm1_output_dim]).to(torch.bfloat16 if test_bfloat16 else torch.float16) * 0.25
+            gmm2_weight = torch.rand([local_expert_num, gmm2_input_dim, gmm2_output_dim]).to(torch.bfloat16 if test_bfloat16 else torch.float16) * 0.25
+        gmm1_weight[:, ::2, :] = gmm1_weight[:, ::2, :] * -1
+        gmm2_weight[:, ::2, :] = gmm2_weight[:, ::2, :] * -1
     expert_scales = torch.rand(actual_bs, top_k)
     if test_bfloat16:
         x = x.bfloat16()
@@ -467,10 +468,28 @@ def run_once(local_rank_id,
         config.mode = "reduce-overhead"
         npu_backend = torchair.get_npu_backend(compiler_config=config)
         fused_ops = torch.compile(fused_ops, backend=npu_backend)
-    small_op_token_output, small_op_count_output, small_debug_info = small_ops(*input_datas)
+    
+    # test performance
+    start_time = time.perf_counter()
+    for _ in range(100):
+        small_op_token_output, small_op_count_output = small_ops(*input_datas)
+    torch_npu.npu.synchronize(device_id)
+    end_time = time.perf_counter()
+    elapsed_time = end_time - start_time
+    elapsed_time_us = elapsed_time * 1000000
+    print(f"rank-{global_rank_id} small {elapsed_time_us} us")
+    start_time = time.perf_counter()
+    for _ in range(100):
+        fused_op_token_output, fused_op_count_output = fused_ops(*input_datas)
+    torch_npu.npu.synchronize(device_id)
+    end_time = time.perf_counter()
+    elapsed_time = end_time - start_time
+    elapsed_time_us = elapsed_time * 1000000
+    print(f"rank-{global_rank_id} fused {elapsed_time_us} us")
+    small_op_token_output, small_op_count_output = small_ops(*input_datas)
     torch_npu.npu.synchronize(device_id)
     print(f"rank-{global_rank_id} Small op End")
-    fused_op_token_output, fused_op_count_output, fused_debug_info = fused_ops(*input_datas)
+    fused_op_token_output, fused_op_count_output = fused_ops(*input_datas)
     torch_npu.npu.synchronize(device_id)
     print(f"rank-{global_rank_id} Fused op End")
     dist.destroy_process_group()
@@ -487,16 +506,7 @@ def run_once(local_rank_id,
         print(f"rank-{global_rank_id} Assert close Failed: {e}")
     else:
         print(f"rank-{global_rank_id} Assert close Pass")
-    finally: # for debug
-        recv_token_num = small_op_count_output[-1].item()
-        small_dispatch_output = small_debug_info[0:recv_token_num].view(recv_token_num, token_hidden_size)
-        fused_dispatch_output = fused_debug_info.view(torch.bfloat16 if test_bfloat16 else torch.float16)[0:recv_token_num * token_hidden_size].view(recv_token_num, token_hidden_size)
-        diff_dispatch_output = (small_dispatch_output - fused_dispatch_output).abs()
-        print(f"rank-{global_rank_id} {recv_token_num=}")
-        print(f"rank-{global_rank_id} {small_dispatch_output=}")
-        print(f"rank-{global_rank_id} {fused_dispatch_output=}")
-        print(f"rank-{global_rank_id} Diff dispatch output max: {diff_dispatch_output.max().item()}")
-        print(f"rank-{global_rank_id} Diff dispatch output avg: {diff_dispatch_output.mean().item()}")
+    gc.collect()
     torch.npu.empty_cache()
     torch.npu.reset_peak_memory_stats()
 
