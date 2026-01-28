@@ -119,14 +119,6 @@ public:
         for (uint32_t i = 0; i < UB_STAGES; ++i) {
             ubCList[i] = resource.ubBuf.template GetBufferByByte<ElementC>(ubOffset);
             ubOffset += TileShape::COUNT * sizeof(ElementC);
-            // if constexpr (!std::is_same_v<ElementRawScale, ElementFp32Scale>) {
-            //     ubRawScaleList[i] = resource.ubBuf.template GetBufferByByte<ElementRawScale>(ubOffset);
-            //     ubOffset += TileShape::COLUMN * sizeof(ElementRawScale);
-            // }
-            // ubFp32ScaleList[i] = resource.ubBuf.template GetBufferByByte<ElementFp32Scale>(ubOffset);
-            // ubOffset += TileShape::COLUMN * sizeof(ElementFp32Scale);
-            // ubPerTokenScaleList[i] = resource.ubBuf.template GetBufferByByte<ElementPerTokenScale>(ubOffset);
-            // ubOffset += TileShape::ROW * sizeof(ElementPerTokenScale);
             ubDList[i] = resource.ubBuf.template GetBufferByByte<ElementD>(ubOffset);
             ubOffset += TileShape::COUNT * sizeof(ElementD);
 
@@ -311,9 +303,6 @@ private:
     MoeDistributeCombineImpl::CombineCalcInfo calcInfo;
 
     AscendC::LocalTensor<ElementC> ubCList[UB_STAGES];
-    // AscendC::LocalTensor<ElementRawScale> ubRawScaleList[UB_STAGES];
-    // AscendC::LocalTensor<ElementFp32Scale> ubFp32ScaleList[UB_STAGES];
-    // AscendC::LocalTensor<ElementPerTokenScale> ubPerTokenScaleList[UB_STAGES];
     AscendC::LocalTensor<ElementD> ubDList[UB_STAGES];
 
     int32_t eventUbCVMTE2List[UB_STAGES];
