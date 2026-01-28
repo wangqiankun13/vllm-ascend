@@ -178,6 +178,7 @@ public:
             return;
         }
         callback();
+        ubListId = 0;
         // Calculate the offset of the current block
         MatrixCoord blockShape = blockShapeMNK.GetCoordMN();
         MatrixCoord blockCoord = blockCoordMNK.GetCoordMN();
