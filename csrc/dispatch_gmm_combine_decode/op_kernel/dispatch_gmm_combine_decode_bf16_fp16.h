@@ -60,7 +60,7 @@ template <TemplateMC2TypeClass, class L1TileShape_, class L0TileShape_, class Ep
           class BlockScheduler_, class DispatchPolicy_ = MmadAtlasA2Custom>
 CATLASS_DEVICE void GmmDeqSwigluQuant(GemmCoord problemShape, uint32_t groupCount, GM_ADDR gmGroupList, GM_ADDR gmA,
                                   layout::RowMajor layoutA, GM_ADDR gmB,
-                                  typename std::conditional<(EXEC_FLAG & EXEC_FLAG_ND_FORMAT), layout::RowMajor, layout::zN>::type layoutB
+                                  typename std::conditional<(EXEC_FLAG & EXEC_FLAG_ND_FORMAT) != 0, layout::RowMajor, layout::zN>::type layoutB,
                                   GM_ADDR gmScale,
                                   layout::VectorLayout layoutScale, GM_ADDR gmPerTokenScale,
                                   layout::VectorLayout layoutPerTokenScale, GM_ADDR gmD, layout::RowMajor layoutD,
@@ -77,8 +77,8 @@ CATLASS_DEVICE void GmmDeqSwigluQuant(GemmCoord problemShape, uint32_t groupCoun
     using L0TileShape = L0TileShape_;
 
     using AType = Gemm::GemmType<ExpandXType, layout::RowMajor>;
-    using LayoutB = typename std::conditional<(EXEC_FLAG & EXEC_FLAG_ND_FORMAT), layout::RowMajor, layout::zN>::type;
-    using BType = Gemm::GemmType<int8_t, LayoutB>;
+    using LayoutB = typename std::conditional<(EXEC_FLAG & EXEC_FLAG_ND_FORMAT) != 0, layout::RowMajor, layout::zN>::type;
+    using BType = Gemm::GemmType<WType, LayoutB>;
     using CType = Gemm::GemmType<float, layout::RowMajor>;
 
     using BlockMmad = Gemm::Block::BlockMmad<DispatchPolicy, L1TileShape, L0TileShape, AType, BType, CType>;
@@ -112,13 +112,13 @@ CATLASS_DEVICE void GmmDeqSwigluQuant(GemmCoord problemShape, uint32_t groupCoun
     using ElementGroupList = int64_t;
 
     using GemmKernel = typename std::conditional<
-        (EXEC_FLAG & EXEC_FLAG_DEEP_FUSE),
+        (EXEC_FLAG & EXEC_FLAG_DEEP_FUSE) != 0,
         Gemm::Kernel::GroupedMatmulSliceMSwigluMultiStageWorkspace<
             TemplateMC2TypeFunc, BlockMmad, BlockEpilogue, BlockScheduler, WORKSPACE_STAGES, ElementGroupList>,
         Gemm::Kernel::GroupedMatmulSliceMSwigluMultiStageWorkspaceWithShallowDispatch<
             TemplateMC2TypeFunc, BlockMmad, BlockEpilogue, BlockScheduler, WORKSPACE_STAGES, ElementGroupList>>::type;
 
-    if constexpr (EXEC_FLAG & EXEC_FLAG_DEEP_FUSE) {
+    if constexpr ((EXEC_FLAG & EXEC_FLAG_DEEP_FUSE) != 0) {
         typename GemmKernel::Params params{problemShape,
                                            groupCount,
                                            gmGroupList,
@@ -184,7 +184,7 @@ template <TemplateMC2TypeClass, class L1TileShape_, class L0TileShape_, class Ep
           class DispatchPolicy_ = MmadAtlasA2Custom>
 CATLASS_DEVICE void GmmDeq(GemmCoord problemShape, uint32_t groupCount, GM_ADDR gmGroupList, GM_ADDR gmA,
                        layout::RowMajor layoutA, GM_ADDR gmB,
-                       typename std::conditional<(EXEC_FLAG & EXEC_FLAG_ND_FORMAT), layout::RowMajor, layout::zN>::type layoutB,
+                       typename std::conditional<(EXEC_FLAG & EXEC_FLAG_ND_FORMAT) != 0, layout::RowMajor, layout::zN>::type layoutB,
                        GM_ADDR gmScale,
                        layout::VectorLayout layoutScale, GM_ADDR gmPerTokenScale,
                        layout::VectorLayout layoutPerTokenScale, GM_ADDR gmD, layout::RowMajor layoutD,
@@ -196,8 +196,8 @@ CATLASS_DEVICE void GmmDeq(GemmCoord problemShape, uint32_t groupCount, GM_ADDR 
     using L0TileShape = L0TileShape_;
 
     using AType = Gemm::GemmType<ExpandXType, layout::RowMajor>;
-    using LayoutB = typename std::conditional<(EXEC_FLAG & EXEC_FLAG_ND_FORMAT), layout::RowMajor, layout::zN>::type;
-    using BType = Gemm::GemmType<int8_t, LayoutB>;
+    using LayoutB = typename std::conditional<(EXEC_FLAG & EXEC_FLAG_ND_FORMAT) != 0, layout::RowMajor, layout::zN>::type;
+    using BType = Gemm::GemmType<WType, LayoutB>;
     using CType = Gemm::GemmType<float, layout::RowMajor>;
 
     using BlockMmad = Gemm::Block::BlockMmad<DispatchPolicy, L1TileShape, L0TileShape, AType, BType, CType>;
@@ -350,29 +350,29 @@ __aicore__ inline void DispatchGmmCombineDecodeBf16Fp16<TemplateMC2TypeFunc>::In
     gmm2InputDim_ = gmm1OutputDim_ / 2;
 }
 
-template<uint32_t EXEC_FLAG>
+template<uint32_t EXEC_FLAG, typename WType>
 __aicore__ inline auto CreateWeightLayout(uint32_t k, uint32_t n) {
-    if constexpr ((EXEC_FLAG & EXEC_FLAG_ND_FORMAT) == 1) {
+    if constexpr ((EXEC_FLAG & EXEC_FLAG_ND_FORMAT) != 0) {
         MatrixCoord mc{k, n};
-        return layout::RowMajor::template MakeLayoutInUb<int8_t>(mc);
+        return layout::RowMajor::template MakeLayoutInUb<WType>(mc);
     } else {
-        return layout::zN::template MakeLayout<int8_t>(k, n);
+        return layout::zN::template MakeLayout<WType>(k, n);
     }
 }
 
 template <TemplateMC2TypeClass>
 __aicore__ inline void DispatchGmmCombineDecodeBf16Fp16<TemplateMC2TypeFunc>::Process()
 {
-    using LayoutB = typename std::conditional<(EXEC_FLAG & EXEC_FLAG_ND_FORMAT), layout::RowMajor, layout::zN>::type;
+    using LayoutB = typename std::conditional<(EXEC_FLAG & EXEC_FLAG_ND_FORMAT) != 0, layout::RowMajor, layout::zN>::type;
     GemmCoord gmm1ProblemShape{maxTokenNum_, gmm1OutputDim_, tokenHiddenSize_};
     GemmCoord gmm2ProblemShape{maxTokenNum_, gmm2OutputDim_, gmm2InputDim_};
 
     layout::RowMajor layoutX1{maxTokenNum_, tokenHiddenSize_};
-    auto layoutWeight1 = CreateWeightLayout<EXEC_FLAG>(tokenHiddenSize_, gmm1OutputDim_);
+    auto layoutWeight1 = CreateWeightLayout<EXEC_FLAG, WType>(tokenHiddenSize_, gmm1OutputDim_);
     layout::VectorLayout layoutW1Scale{gmm1OutputDim_};
     layout::VectorLayout layoutX1Scale{maxTokenNum_};
     layout::RowMajor layoutX2{maxTokenNum_, gmm2InputDim_};
-    auto layoutWeight2 = CreateWeightLayout<EXEC_FLAG>(gmm2InputDim_, gmm2OutputDim_);
+    auto layoutWeight2 = CreateWeightLayout<EXEC_FLAG, WType>(gmm2InputDim_, gmm2OutputDim_);
     layout::VectorLayout layoutW2Scale{gmm2OutputDim_};
     layout::VectorLayout layoutX2Scale{maxTokenNum_};
     layout::RowMajor layoutOutput{maxTokenNum_, gmm2OutputDim_};
