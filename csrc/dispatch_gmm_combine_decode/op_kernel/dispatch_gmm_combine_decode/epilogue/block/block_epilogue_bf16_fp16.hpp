@@ -48,13 +48,13 @@ public:
     using LayoutD = typename DType_::Layout;
 
     // Check data infos
-    // static_assert(std::is_same_v<ElementC, int32_t> &&
-    //                   (std::is_same_v<ElementD, half> || std::is_same_v<ElementD, bfloat16_t>),
-    //               "The element type template parameters of BlockEpilogue are wrong");
-    // static_assert(std::is_same_v<LayoutC, layout::RowMajor> && std::is_same_v<LayoutScale, layout::VectorLayout> &&
-    //                   std::is_same_v<LayoutPerTokenScale, layout::VectorLayout> &&
-    //                   std::is_same_v<LayoutD, layout::RowMajor>,
-    //               "The layout template parameters of BlockEpilogue are wrong");
+    static_assert(std::is_same_v<ElementC, float> &&
+                      (std::is_same_v<ElementD, half> || std::is_same_v<ElementD, bfloat16_t>),
+                  "The element type template parameters of BlockEpilogue are wrong");
+    static_assert(std::is_same_v<LayoutC, layout::RowMajor> && std::is_same_v<LayoutScale, layout::VectorLayout> &&
+                      std::is_same_v<LayoutPerTokenScale, layout::VectorLayout> &&
+                      std::is_same_v<LayoutD, layout::RowMajor>,
+                  "The layout template parameters of BlockEpilogue are wrong");
 
     // Tile compute ops
     using TileRowBroadcastMul = TileRowBroadcastMul_;

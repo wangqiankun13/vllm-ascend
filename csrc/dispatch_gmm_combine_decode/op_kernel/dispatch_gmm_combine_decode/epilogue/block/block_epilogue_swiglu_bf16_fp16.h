@@ -47,12 +47,12 @@ public:
     using LayoutD = typename DType_::Layout;
 
     // Check data infos
-    // static_assert(std::is_same_v<ElementC, int32_t> && std::is_same_v<ElementD, float>,
-    //               "The element type template parameters of BlockEpilogue are wrong");
-    // static_assert(std::is_same_v<LayoutC, layout::RowMajor> && std::is_same_v<LayoutScale, layout::VectorLayout> &&
-    //                   std::is_same_v<LayoutPerTokenScale, layout::VectorLayout> &&
-    //                   std::is_same_v<LayoutD, layout::RowMajor>,
-    //               "The layout template parameters of BlockEpilogue are wrong");
+    static_assert(std::is_same_v<ElementC, float> && std::is_same_v<ElementD, float>,
+                  "The element type template parameters of BlockEpilogue are wrong");
+    static_assert(std::is_same_v<LayoutC, layout::RowMajor> && std::is_same_v<LayoutScale, layout::VectorLayout> &&
+                      std::is_same_v<LayoutPerTokenScale, layout::VectorLayout> &&
+                      std::is_same_v<LayoutD, layout::RowMajor>,
+                  "The layout template parameters of BlockEpilogue are wrong");
 
     // Tile compute ops
     using TileRowBroadcastMul = TileRowBroadcastMul_;
@@ -78,11 +78,7 @@ public:
 
     static_assert(UB_STAGES <= 2, "UB stages too large, event id is not enough.");
 
-    // static_assert((UB_STAGES * (TileShape::COUNT * sizeof(ElementC) +
-    //                             (std::is_same_v<ElementRawScale, ElementFp32Scale> ?
-    //                                 0 : TileShape::COLUMN * sizeof(ElementRawScale)) +
-    //                             TileShape::COLUMN * sizeof(ElementFp32Scale) +
-    //                             TileShape::ROW * sizeof(ElementPerTokenScale) + TileShape::COUNT * sizeof(ElementD)) +
+    // static_assert((UB_STAGES * (TileShape::COUNT * sizeof(ElementC) + TileShape::COUNT * sizeof(ElementD)) +
     //                (TileShape::COUNT + TileShape::COUNT) * sizeof(float) + TileShape::ROW * BYTE_PER_BLK) <=
     //                   ArchTag::UB_SIZE,
     //               "TileShape is too large to fit in UB");
