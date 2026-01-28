@@ -78,10 +78,9 @@ public:
 
     static_assert(UB_STAGES <= 2, "UB stages too large, event id is not enough.");
 
-    // static_assert((UB_STAGES * (TileShape::COUNT * sizeof(ElementC) + TileShape::COUNT * sizeof(ElementD)) +
-    //                (TileShape::COUNT + TileShape::COUNT) * sizeof(float) + TileShape::ROW * BYTE_PER_BLK) <=
-    //                   ArchTag::UB_SIZE,
-    //               "TileShape is too large to fit in UB");
+    static_assert((UB_STAGES * (TileShape::COUNT * sizeof(ElementC) + TileShape::COUNT * sizeof(ElementD)) +
+                   TileShape::ROW * BYTE_PER_BLK) <= ArchTag::UB_SIZE,
+                  "TileShape is too large to fit in UB");
 
     struct Params {
         __gm__ ElementRawScale *ptrScale{nullptr};

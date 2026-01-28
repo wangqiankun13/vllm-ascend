@@ -75,14 +75,10 @@ public:
                       std::is_same_v<TileShape, typename TileOneBlkColumnBroadcastMul::TileShape>,
                   "TileShape must be consistent for all tile compute ops");
 
-    // static_assert((UB_STAGES * (TileShape::COUNT * sizeof(ElementC) +
-    //                             (std::is_same_v<ElementRawScale, ElementFp32Scale> ?
-    //                                 0 : TileShape::COLUMN * sizeof(ElementRawScale)) +
-    //                             TileShape::COLUMN * sizeof(ElementFp32Scale) +
-    //                             TileShape::ROW * sizeof(ElementPerTokenScale) + TileShape::COUNT * sizeof(ElementD)) +
-    //                (TileShape::COUNT + TileShape::COUNT) * sizeof(float) + TileShape::ROW * BYTE_PER_BLK) <=
-    //                   ArchTag::UB_SIZE,
-    //               "TileShape is too large to fit in UB");
+    static_assert((UB_STAGES * (TileShape::COUNT * sizeof(ElementC) + TileShape::COUNT * sizeof(ElementD)) +
+                   TileShape::ROW * BYTE_PER_BLK) <= ArchTag::UB_SIZE,
+                  "TileShape is too large to fit in UB");
+
     struct Params {
         __gm__ ElementRawScale *ptrScale{nullptr};
         LayoutScale layoutScale{};
